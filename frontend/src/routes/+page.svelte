@@ -10,7 +10,6 @@
 </script>
 
 <script lang="ts">
-    import 'webrtc-adapter';
     import { browser } from '$app/environment';
     import { onMount } from 'svelte';
     import CodeMirror from 'svelte-codemirror-editor';
@@ -18,7 +17,6 @@
     import { java } from '@codemirror/lang-java';
     import { oneDark } from '@codemirror/theme-one-dark';
     import type { EditorView } from '@codemirror/view';
-    import MicrophoneStream from 'microphone-stream';
 
     let socket: WebSocket | null = null;
     let text = '';

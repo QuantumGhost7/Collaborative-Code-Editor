@@ -95,6 +95,27 @@ async function broadcastFileList() {
   broadcastToAll(JSON.stringify({ type: 'FILE_LIST', files }));
 }
 
+function formatCode(code: string): string {
+  // Split into lines and remove empty lines at start/end
+  let lines = code.split('\n').filter(line => line.trim());
+  
+  // Find the minimum indentation level
+  const minIndent = Math.min(
+    ...lines
+      .filter(line => line.trim())
+      .map(line => {
+        const match = line.match(/^\s*/);
+        return match ? match[0].length : 0;
+      })
+  );
+
+  // Remove the common indentation
+  lines = lines.map(line => line.slice(minIndent));
+
+  // Join lines back together
+  return lines.join('\n');
+}
+
 async function getAICodeCompletion(content: string, prompt: string, language: string): Promise<string> {
   const maxRetries = 100;
   let retries = 0;
@@ -102,34 +123,48 @@ async function getAICodeCompletion(content: string, prompt: string, language: st
   while (retries < maxRetries) {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-      const fullPrompt = `Given the following code:
+      const fullPrompt = `You are a helpful coding assistant. The user is writing ${language} code and needs help implementing a specific feature.
 
+Current code context:
 ${content}
 
-The user has selected or placed their cursor at this point and provided this prompt:
-"${prompt}"
+User's request: "${prompt}"
 
-Please provide ONLY the code that should be inserted at this point, without any additional context or full function implementations. Your response should be a small snippet that directly addresses the prompt, ready to be inserted into the existing code. Do not include any code block formatting or language specifiers.`;
-      
+Rules:
+1. Provide ONLY the implementation code, no explanations
+2. Keep the code simple and conventional
+3. Don't include function/class declarations unless specifically requested
+4. Don't include code block markers or comments
+5. The code should be ready to directly insert into the existing codebase
+6. Focus on standard library solutions when possible
+7. Maintain consistent indentation using spaces
+8. Start the code at the base indentation level (no leading spaces)
+
+Please provide the implementation:`;
       
       const result = await model.generateContent(fullPrompt);
       const response = await result.response;
       let text = response.text();
       
-      // Remove code block markers from the beginning and end of the text
-      text = text.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '');
+      // Clean up the response
+      text = text
+        .replace(/^```[\w]*\n?/, '')
+        .replace(/\n?```$/, '')
+        .replace(/```[\w]*\n?/g, '')
+        .replace(/\n?```/g, '')
+        .trim();
       
-      // Remove any remaining code block markers
-      text = text.replace(/```[\w]*\n?/g, '').replace(/\n?```/g, '');
+      // Format the code
+      text = formatCode(text);
       
       console.log('Received response from Gemini:', text);
       
       return text;
     } catch (error) {
       console.error(`Error in getAICodeCompletion (attempt ${retries + 1}):`, error);
+      retries++;
       if (retries >= maxRetries) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return `Error: Unable to get AI code completion after ${maxRetries} attempts. Last error: ${errorMessage}`;
+        return `Error: Unable to get AI code completion after ${maxRetries} attempts.`;
       }
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
