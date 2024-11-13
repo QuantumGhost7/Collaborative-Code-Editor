@@ -1,11 +1,16 @@
+import mongoose from 'mongoose';
+import { File, Version } from './models/File';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
-import fs from 'fs/promises';
-import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-//Set environment variables
+
 dotenv.config();
+
+// MongoDB Connection
+mongoose.connect('mongodb://localhost:27017/code_editor')
+    .then(() => console.log('Connected to MongoDB'))
+    .catch(err => console.error('MongoDB connection error:', err));
 
 type Message = string;
 //Create http server
@@ -13,9 +18,6 @@ const server = createServer();
 //Create WS Server from http server
 const wss = new WebSocketServer({ server });
 let textData: Message = '';
-//Set poth for files directory
-const FILES_DIR = path.join(__dirname, 'files');
-fs.mkdir(FILES_DIR, { recursive: true }).catch(console.error);
 
 //Event listener for new connections
 wss.on('connection', (ws: WebSocket) => {
@@ -44,6 +46,12 @@ wss.on('connection', (ws: WebSocket) => {
       case 'LOAD_FILE':
         const fileContent = await loadFile(data.filename);
         ws.send(JSON.stringify({ type: 'FILE_LOADED', filename: data.filename, content: fileContent }));
+        const versions = await getFileVersions(data.filename);
+        ws.send(JSON.stringify({ type: 'FILE_VERSIONS', versions }));
+        break;
+      case 'LOAD_VERSION':
+        const versionContent = await loadVersion(data.versionId);
+        ws.send(JSON.stringify({ type: 'FILE_LOADED', filename: data.filename, content: versionContent }));
         break;
       case 'AI_CODE_COMPLETION':
         const aiCompletion = await getAICodeCompletion(data.content, data.prompt, data.language);
@@ -66,15 +74,56 @@ if (!GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 async function saveFile(filename: string, content: string) {
-  await fs.writeFile(path.join(FILES_DIR, filename), content, 'utf-8');
+    try {
+        let file = await File.findOne({ filename });
+        
+        if (file) {
+            // Create new version before updating
+            await Version.create({
+                fileId: file._id,
+                content: file.content,
+                version: await Version.countDocuments({ fileId: file._id }) + 1
+            });
+            
+            // Update file
+            file.content = content;
+            file.lastModified = new Date();
+            await file.save();
+        } else {
+            // Create new file
+            file = await File.create({ 
+                filename, 
+                content,
+                lastModified: new Date()
+            });
+        }
+        
+        return file;
+    } catch (error) {
+        console.error('Error saving file:', error);
+        throw error;
+    }
 }
 
 async function getFiles(): Promise<string[]> {
-  return fs.readdir(FILES_DIR);
+    try {
+        const files = await File.find().select('filename');
+        return files.map(f => f.filename);
+    } catch (error) {
+        console.error('Error getting files:', error);
+        return [];
+    }
 }
 
 async function loadFile(filename: string): Promise<string> {
-  return fs.readFile(path.join(FILES_DIR, filename), 'utf-8');
+    try {
+        const file = await File.findOne({ filename });
+        if (!file) throw new Error('File not found');
+        return file.content;
+    } catch (error) {
+        console.error('Error loading file:', error);
+        throw error;
+    }
 }
 
 function broadcastToAll(message: string) {
@@ -171,6 +220,33 @@ Please provide the implementation:`;
   }
   
   return 'Error';
+}
+
+async function getFileVersions(filename: string) {
+    try {
+        const file = await File.findOne({ filename });
+        if (!file) throw new Error('File not found');
+        
+        const versions = await Version.find({ fileId: file._id })
+            .sort({ version: -1 })
+            .select('version timestamp');
+            
+        return versions;
+    } catch (error) {
+        console.error('Error getting versions:', error);
+        throw error;
+    }
+}
+
+async function loadVersion(versionId: string) {
+    try {
+        const version = await Version.findById(versionId);
+        if (!version) throw new Error('Version not found');
+        return version.content;
+    } catch (error) {
+        console.error('Error loading version:', error);
+        throw error;
+    }
 }
 
 const PORT = 8080;

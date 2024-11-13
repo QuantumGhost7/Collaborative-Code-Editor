@@ -5,8 +5,6 @@
             webkitSpeechRecognition: any;
         }
     }
-
-    type SpeechRecognition = any;
 </script>
 
 <script lang="ts">
@@ -25,11 +23,8 @@
     let editor: EditorView;
     let pingInterval: number;
     let isRecording = false;
-    let mediaRecorder: MediaRecorder | null = null;
-    let audioChunks: Blob[] = [];
 
     let currentTranscript = '';
-    let finalTranscript = '';
 
     class AudioBuffer {
         private buffer: Int16Array[];
@@ -60,8 +55,6 @@
         }
     }
 
-    let micStream: any = null;
-    const audioBuffer = new AudioBuffer();
 
     let recognition: SpeechRecognition | null = null;
 
@@ -131,6 +124,10 @@
                     }));
                 }
                 break;
+            case 'FILE_VERSIONS':
+                versions = data.versions;
+                showVersions = true;
+                break;
         }
     }
 
@@ -190,9 +187,19 @@
     function handleAICompletion(completion: string) {
         if (editor) {
             const selection = editor.state.selection.main;
-            editor.dispatch({
-                changes: [{from: selection.from, to: selection.to, insert: completion}]
+            const transaction = editor.state.update({
+                changes: [{
+                    from: selection.from, 
+                    to: selection.to, 
+                    insert: completion + '\n'
+                }],
+                selection: { 
+                    anchor: selection.from + completion.length + 1,
+                    head: selection.from + completion.length + 1 
+                }
             });
+            editor.dispatch(transaction);
+            editor.focus();
         }
     }
 
@@ -202,15 +209,14 @@
                 throw new Error('Browser environment not available');
             }
 
-            // Get the correct Speech Recognition API
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 throw new Error('Speech recognition not supported in this browser');
             }
 
             recognition = new SpeechRecognition();
-            recognition.continuous = false; // Changed to false to capture one utterance at a time
-            recognition.interimResults = true; // Changed to true to get interim results
+            recognition.continuous = false; 
+            recognition.interimResults = true; 
             recognition.lang = 'en-US';
 
             let finalTranscript = '';
@@ -242,7 +248,6 @@
                             }));
                         }
                         
-                        // Stop recording after getting final result
                         if (recognition) {
                             recognition.stop();
                             isRecording = false;
@@ -266,7 +271,6 @@
                 isRecording = false;
             };
 
-            // Start recognition
             recognition.start();
             isRecording = true;
             console.log('Speech recognition started');
@@ -313,19 +317,62 @@
         console.log(`[WebSocket] Message size: ${megabytes.toFixed(2)} MB`);
         return megabytes;
     }
+
+    interface Version {
+        _id: string;
+        version: number;
+        timestamp: string;
+    }
+
+    let versions: Version[] = [];
+    let showVersions = false;
+
+    // Add this function
+    function loadVersion(versionId: string) {
+        if (socket?.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ 
+                type: 'LOAD_VERSION', 
+                versionId,
+                filename: currentFile 
+            }));
+        }
+    }
 </script>
 
 {#if browser}
     <div class="app-container">
-        <div class="file-list">
-            <h3>Files:</h3>
-            <ul>
-                {#each files as file}
-                    <li>
-                        <button class="file-button" on:click={() => loadFile(file)}>{file}</button>
-                    </li>
-                {/each}
-            </ul>
+        <div class="sidebar">
+            <div class="file-list">
+                <h3>Files:</h3>
+                <ul>
+                    {#each files as file}
+                        <li>
+                            <button class="file-button" on:click={() => loadFile(file)}>{file}</button>
+                        </li>
+                    {/each}
+                </ul>
+            </div>
+            
+            {#if showVersions && versions.length > 0}
+                <div class="version-list">
+                    <h3>Previous Versions:</h3>
+                    <ul>
+                        {#each versions as version}
+                            <li>
+                                <button 
+                                    class="version-button" 
+                                    on:click={() => loadVersion(version._id)}
+                                >
+                                    Version {version.version}
+                                    <span class="version-date">
+                                        {new Date(version.timestamp).toLocaleString()}
+                                    </span>
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
+                </div>
+            {/if}
         </div>
         <div class="editor-container">
             <CodeMirror
@@ -499,5 +546,44 @@
     .transcription-box textarea:read-only {
         background-color: #f8f8f8;
         cursor: default;
+    }
+
+    .sidebar {
+        width: 250px;
+        display: flex;
+        flex-direction: column;
+        background-color: #f0f0f0;
+        border-right: 1px solid #ddd;
+        overflow-y: auto;
+    }
+
+    .version-list {
+        padding: 15px;
+        border-top: 1px solid #ddd;
+    }
+
+    .version-button {
+        width: 100%;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        font-size: 0.9em;
+        background-color: #f8f8f8;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        text-align: left;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .version-button:hover {
+        background-color: #e8e8e8;
+    }
+
+    .version-date {
+        font-size: 0.8em;
+        color: #666;
+        margin-top: 4px;
     }
 </style>
