@@ -3,7 +3,7 @@ import { File, Version } from './models/File';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import dotenv from 'dotenv';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import fetch from 'node-fetch';
 
 dotenv.config();
 
@@ -54,7 +54,13 @@ wss.on('connection', (ws: WebSocket) => {
         ws.send(JSON.stringify({ type: 'FILE_LOADED', filename: data.filename, content: versionContent }));
         break;
       case 'AI_CODE_COMPLETION':
-        const aiCompletion = await getAICodeCompletion(data.content, data.prompt, data.language);
+        const aiCompletion = await getAICodeCompletion(
+            data.content, 
+            data.prompt, 
+            data.language,
+            data.isVoicePrompt,
+            data.cursorPosition
+        );
         ws.send(JSON.stringify({ type: 'AI_CODE_COMPLETION', content: aiCompletion }));
         break;
     }
@@ -65,13 +71,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) {
-  console.error('GEMINI_API_KEY is not set');
-  process.exit(1);
-}
-
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 async function saveFile(filename: string, content: string) {
     try {
@@ -145,10 +145,8 @@ async function broadcastFileList() {
 }
 
 function formatCode(code: string): string {
-  // Split into lines and remove empty lines at start/end
   let lines = code.split('\n').filter(line => line.trim());
   
-  // Find the minimum indentation level
   const minIndent = Math.min(
     ...lines
       .filter(line => line.trim())
@@ -158,68 +156,108 @@ function formatCode(code: string): string {
       })
   );
 
-  // Remove the common indentation
   lines = lines.map(line => line.slice(minIndent));
 
-  // Join lines back together
   return lines.join('\n');
 }
 
-async function getAICodeCompletion(content: string, prompt: string, language: string): Promise<string> {
-  const maxRetries = 100;
-  let retries = 0;
+function getLineIndentation(content: string, cursorPosition: number): number {
+    const lines = content.split('\n');
+    let currentPos = 0;
+    
+    // Find the line containing the cursor
+    for (const line of lines) {
+        currentPos += line.length + 1; // +1 for newline
+        if (currentPos > cursorPosition) {
+            // Count leading spaces in the current line
+            const leadingSpaces = line.match(/^[ ]*/)?.[0].length ?? 0;
+            return leadingSpaces;
+        }
+    }
+    return 0;
+}
 
-  while (retries < maxRetries) {
-    try {
-      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-      const fullPrompt = `You are a helpful coding assistant. The user is writing ${language} code and needs help implementing a specific feature.
+function indentCode(code: string, baseIndentation: number): string {
+    const lines = code.split('\n');
+    return lines.map(line => {
+        if (!line.trim()) return ''; // Handle empty lines
+        return ' '.repeat(baseIndentation) + line;
+    }).join('\n');
+}
 
-Current code context:
+async function getAICodeCompletion(
+    content: string, 
+    prompt: string, 
+    language: string, 
+    isVoicePrompt: boolean = false,
+    cursorPosition?: number
+): Promise<string> {
+    const maxRetries = 3;
+    let retries = 0;
+
+    while (retries < maxRetries) {
+        try {
+            // Different prompt format based on input type
+            const fullPrompt = isVoicePrompt ? 
+                `Given this ${language} code:
 ${content}
 
-User's request: "${prompt}"
+The cursor is marked with |CURSOR|. 
+Voice command: "${prompt}"
 
-Rules:
-1. Provide ONLY the implementation code, no explanations
-2. Keep the code simple and conventional
-3. Don't include function/class declarations unless specifically requested
-4. Don't include code block markers or comments
-5. The code should be ready to directly insert into the existing codebase
-6. Focus on standard library solutions when possible
-7. Maintain consistent indentation using spaces
-8. Start the code at the base indentation level (no leading spaces)
+Return only the code that should be inserted at the cursor position (|CURSOR|).
+No explanations, no backticks, just the code to insert.` 
+                : 
+                `Given this ${language} code:
+${content}
 
-Please provide the implementation:`;
-      
-      const result = await model.generateContent(fullPrompt);
-      const response = await result.response;
-      let text = response.text();
-      
-      // Clean up the response
-      text = text
-        .replace(/^```[\w]*\n?/, '')
-        .replace(/\n?```$/, '')
-        .replace(/```[\w]*\n?/g, '')
-        .replace(/\n?```/g, '')
-        .trim();
-      
-      // Format the code
-      text = formatCode(text);
-      
-      console.log('Received response from Gemini:', text);
-      
-      return text;
-    } catch (error) {
-      console.error(`Error in getAICodeCompletion (attempt ${retries + 1}):`, error);
-      retries++;
-      if (retries >= maxRetries) {
-        return `Error: Unable to get AI code completion after ${maxRetries} attempts.`;
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+The text "${prompt}" in the code should be replaced with appropriate code.
+Return only the code that should replace "${prompt}".
+No explanations, no backticks, just the replacement code.`;
+
+            const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model: 'llama3.2',
+                    prompt: fullPrompt,
+                    stream: false
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            let text = data.response
+                .replace(/^```[\w]*\n?/, '')
+                .replace(/\n?```$/, '')
+                .replace(/```[\w]*\n?/g, '')
+                .replace(/\n?```/g, '')
+                .trim();
+            
+            // Apply indentation if cursor position is provided
+            if (cursorPosition !== undefined) {
+                const indentation = getLineIndentation(content, cursorPosition);
+                text = indentCode(text, indentation);
+            }
+            
+            console.log('Received response from Llama2:', text);
+            
+            return text;
+        } catch (error) {
+            console.error(`Error in getAICodeCompletion (attempt ${retries + 1}):`, error);
+            retries++;
+            if (retries >= maxRetries) {
+                return `Error: Unable to get AI code completion after ${maxRetries} attempts.`;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
     }
-  }
-  
-  return 'Error';
+    return 'Error';
 }
 
 async function getFileVersions(filename: string) {

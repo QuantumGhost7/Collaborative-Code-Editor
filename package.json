@@ -10,6 +10,10 @@
   "description": "",
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
-    "mongoose": "^8.8.1"
+    "mongoose": "^8.8.1",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node-fetch": "^2.6.12"
   }
 }

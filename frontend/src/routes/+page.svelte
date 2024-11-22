@@ -69,7 +69,7 @@
     });
 
     function initializeWebSocket() {
-        socket = new WebSocket('ws://192.168.1.3:8080');
+        socket = new WebSocket('ws://172.20.10.9:8080');
 
         socket.onmessage = ({ data }) => {
             const message = JSON.parse(data);
@@ -187,15 +187,23 @@
     function handleAICompletion(completion: string) {
         if (editor) {
             const selection = editor.state.selection.main;
+            const line = editor.state.doc.lineAt(selection.from);
+            const indentation = line.text.match(/^\s*/)?.[0] || '';
+            
+            const indentedCompletion = completion
+                .split('\n')
+                .map((line, i) => i === 0 ? line : indentation + line)
+                .join('\n');
+
             const transaction = editor.state.update({
                 changes: [{
                     from: selection.from, 
                     to: selection.to, 
-                    insert: completion + '\n'
+                    insert: indentedCompletion + '\n'
                 }],
                 selection: { 
-                    anchor: selection.from + completion.length + 1,
-                    head: selection.from + completion.length + 1 
+                    anchor: selection.from + indentedCompletion.length + 1,
+                    head: selection.from + indentedCompletion.length + 1 
                 }
             });
             editor.dispatch(transaction);
@@ -217,7 +225,7 @@
             recognition = new SpeechRecognition();
             recognition.continuous = false; 
             recognition.interimResults = true; 
-            recognition.lang = 'en-US';
+            recognition.lang = 'en-US'; 
 
             let finalTranscript = '';
 
@@ -327,7 +335,6 @@
     let versions: Version[] = [];
     let showVersions = false;
 
-    // Add this function
     function loadVersion(versionId: string) {
         if (socket?.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ 
